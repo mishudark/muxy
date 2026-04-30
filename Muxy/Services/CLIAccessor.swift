@@ -24,16 +24,21 @@ enum CLIAccessor {
         }
 
         let url = URL(fileURLWithPath: standardizedPath)
-        let project = Project(
+        var project = Project(
             name: url.lastPathComponent,
             path: standardizedPath,
             sortOrder: projectStore.projects.count
         )
-        projectStore.add(project)
-        worktreeStore.ensurePrimary(for: project)
-        guard let primary = worktreeStore.primary(for: project.id) else { return }
-        appState.selectProject(project, worktree: primary)
-        activateApp()
+        Task {
+            project.vcsKind = await VCSKind.detect(at: project.path)
+            await MainActor.run {
+                projectStore.add(project)
+                worktreeStore.ensurePrimary(for: project)
+                guard let primary = worktreeStore.primary(for: project.id) else { return }
+                appState.selectProject(project, worktree: primary)
+                activateApp()
+            }
+        }
     }
 
     private static func activateApp() {

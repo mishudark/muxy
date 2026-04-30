@@ -107,6 +107,7 @@ private struct DebugMetrics {
         return "\(seconds)s"
     }
 
+    @MainActor
     static func current() -> DebugMetrics {
         DebugMetrics(
             memoryBytes: residentMemory(),

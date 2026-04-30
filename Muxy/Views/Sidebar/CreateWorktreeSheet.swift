@@ -20,9 +20,20 @@ struct CreateWorktreeSheet: View {
     @State private var runSetup = false
     @State private var inProgress = false
     @State private var errorMessage: String?
+    @State private var vcsKind: VCSKind?
 
     private let gitRepository = GitRepositoryService()
     private let gitWorktree = GitWorktreeService.shared
+    private let jjWorktree = JJWorktreeService.shared
+    private let jjRepository = JJRepositoryService()
+
+    private var isJujutsu: Bool {
+        vcsKind?.isJujutsu == true
+    }
+
+    private var branchLabel: String {
+        isJujutsu ? "Bookmark" : "Branch"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -37,12 +48,12 @@ struct CreateWorktreeSheet: View {
 
             SegmentedPicker(
                 selection: $createNewBranch,
-                options: [(true, "Create new branch"), (false, "Use existing branch")]
+                options: [(true, "Create new \(branchLabel.lowercased())"), (false, "Use existing \(branchLabel.lowercased())")]
             )
 
             if createNewBranch {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Branch Name").font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
+                    Text("\(branchLabel) Name").font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
                     TextField("feature-x", text: $branchName)
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: branchName) { _, newValue in
@@ -51,7 +62,7 @@ struct CreateWorktreeSheet: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Branch").font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
+                    Text(branchLabel).font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
                     Picker("", selection: $selectedExistingBranch) {
                         ForEach(availableBranches, id: \.self) { branch in
                             Text(branch).tag(branch)
@@ -86,6 +97,7 @@ struct CreateWorktreeSheet: View {
         .padding(20)
         .frame(width: 460)
         .task {
+            vcsKind = await VCSKind.detect(at: project.path)
             await loadBranches()
             loadSetupCommands()
         }
@@ -179,7 +191,11 @@ struct CreateWorktreeSheet: View {
 
     private func loadBranches() async {
         do {
-            let branches = try await gitRepository.listBranches(repoPath: project.path)
+            let branches = if isJujutsu {
+                try await jjRepository.listBranches(repoPath: project.path)
+            } else {
+                try await gitRepository.listBranches(repoPath: project.path)
+            }
             await MainActor.run {
                 availableBranches = branches
                 if selectedExistingBranch.isEmpty {
@@ -215,12 +231,21 @@ struct CreateWorktreeSheet: View {
         }
 
         do {
-            try await gitWorktree.addWorktree(
-                repoPath: project.path,
-                path: worktreeDirectory,
-                branch: branch,
-                createBranch: createNewBranch
-            )
+            if isJujutsu {
+                try await jjWorktree.addWorktree(
+                    repoPath: project.path,
+                    path: worktreeDirectory,
+                    branch: branch,
+                    createBranch: createNewBranch
+                )
+            } else {
+                try await gitWorktree.addWorktree(
+                    repoPath: project.path,
+                    path: worktreeDirectory,
+                    branch: branch,
+                    createBranch: createNewBranch
+                )
+            }
         } catch {
             await MainActor.run {
                 inProgress = false

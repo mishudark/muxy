@@ -72,6 +72,7 @@ struct BranchPickerContent: View {
     let currentBranch: String?
     let branches: [String]
     let isLoading: Bool
+    var isJujutsu: Bool = false
     var fixedSize: Bool = false
     let onSelect: (String) -> Void
     let onCreateBranch: (() -> Void)?
@@ -79,16 +80,32 @@ struct BranchPickerContent: View {
 
     private var items: [BranchItem] { branches.map { BranchItem(name: $0) } }
 
+    private var searchPlaceholder: String {
+        isJujutsu ? "Search bookmarks…" : "Search branches…"
+    }
+
+    private var emptyLabel: String {
+        isLoading ? "Loading…" : (isJujutsu ? "No bookmarks found" : "No branches found")
+    }
+
+    private var createLabel: String {
+        isJujutsu ? "New Bookmark…" : "New Branch…"
+    }
+
+    private var deleteLabel: String {
+        isJujutsu ? "Delete Bookmark" : "Delete Branch"
+    }
+
     var body: some View {
         PopoverPicker(
             items: items,
             filterKey: \.name,
-            searchPlaceholder: "Search branches…",
-            emptyLabel: isLoading ? "Loading…" : "No branches found",
+            searchPlaceholder: searchPlaceholder,
+            emptyLabel: emptyLabel,
             footerActions: onCreateBranch.map { action in
                 [
                     PopoverFooterAction(
-                        title: "New Branch…",
+                        title: createLabel,
                         icon: "plus.square.dashed",
                         action: action
                     ),
@@ -106,7 +123,7 @@ struct BranchPickerContent: View {
                 .padding(.vertical, 2)
                 .contextMenu {
                     if let onDeleteBranch, item.name != currentBranch {
-                        Button("Delete Branch", role: .destructive) {
+                        Button(deleteLabel, role: .destructive) {
                             onDeleteBranch(item.name)
                         }
                     }

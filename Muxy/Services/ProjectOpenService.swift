@@ -13,14 +13,19 @@ enum ProjectOpenService {
         panel.allowsMultipleSelection = false
         panel.message = "Select a project folder"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let project = Project(
+        var project = Project(
             name: url.lastPathComponent,
             path: url.path(percentEncoded: false),
             sortOrder: projectStore.projects.count
         )
-        projectStore.add(project)
-        worktreeStore.ensurePrimary(for: project)
-        guard let primary = worktreeStore.primary(for: project.id) else { return }
-        appState.selectProject(project, worktree: primary)
+        Task {
+            project.vcsKind = await VCSKind.detect(at: project.path)
+            await MainActor.run {
+                projectStore.add(project)
+                worktreeStore.ensurePrimary(for: project)
+                guard let primary = worktreeStore.primary(for: project.id) else { return }
+                appState.selectProject(project, worktree: primary)
+            }
+        }
     }
 }

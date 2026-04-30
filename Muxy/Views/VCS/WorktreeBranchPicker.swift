@@ -7,6 +7,7 @@ struct WorktreeBranchPicker: View {
     let branches: [String]
     let isLoadingBranches: Bool
     let activeWorktree: Worktree?
+    let isJujutsu: Bool
     let onSelectBranch: (String) -> Void
     let onRefreshBranches: () -> Void
     let onCreateBranch: () -> Void
@@ -27,6 +28,12 @@ struct WorktreeBranchPicker: View {
             switch self {
             case .worktrees: "Worktrees"
             case .branches: "Branches"
+            }
+        }
+        func title(isJujutsu: Bool) -> String {
+            switch self {
+            case .worktrees: "Worktrees"
+            case .branches: isJujutsu ? "Bookmarks" : "Branches"
             }
         }
     }
@@ -105,7 +112,7 @@ struct WorktreeBranchPicker: View {
                 onRefreshBranches()
             }
         } label: {
-            Text(item.title)
+            Text(item.title(isJujutsu: isJujutsu))
                 .font(.system(size: 11, weight: isActive ? .semibold : .medium))
                 .foregroundStyle(isActive ? MuxyTheme.fg : MuxyTheme.fgDim)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -142,6 +149,7 @@ struct WorktreeBranchPicker: View {
                         currentBranch: currentBranch,
                         branches: branches,
                         isLoading: isLoadingBranches,
+                        isJujutsu: isJujutsu,
                         fixedSize: false,
                         onSelect: { branch in
                             showPopover = false

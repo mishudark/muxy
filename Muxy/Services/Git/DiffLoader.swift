@@ -15,13 +15,13 @@ enum DiffLoader {
     static func load(
         _ request: Request,
         cache: DiffCache,
-        git: GitRepositoryService = GitRepositoryService()
+        vcs: VCSRepositoryService = VCSRepositoryService()
     ) {
         cache.markLoading(request.filePath)
         let lineLimit = request.forceFull ? nil : previewLineLimit
         let task = Task { @MainActor in
             do {
-                let result = try await git.patchAndCompare(
+                let result = try await vcs.patchAndCompare(
                     repoPath: request.repoPath,
                     filePath: request.filePath,
                     lineLimit: lineLimit,

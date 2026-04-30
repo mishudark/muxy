@@ -117,7 +117,7 @@ private struct NamePrompt: Identifiable {
 }
 
 private struct CommitRow: View {
-    let commit: GitCommit
+    let commit: VCSCommit
     let currentBranch: String?
     let onCheckout: (String) -> Void
     let onCheckoutDetached: (String) -> Void

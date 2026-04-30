@@ -77,8 +77,8 @@ struct GitCommit: Identifiable {
     var isMerge: Bool { parentHashes.count > 1 }
 }
 
-struct GitRef {
-    enum Kind {
+struct GitRef: Hashable {
+    enum Kind: Hashable {
         case localBranch
         case remoteBranch
         case tag

@@ -56,7 +56,7 @@ final class VCSTabState {
     }
 
     let projectPath: String
-    var files: [GitStatusFile] = []
+    var files: [VCSStatusFile] = []
     var mode: ViewMode = .unified
     var fileListMode: FileListMode = .flat {
         didSet {
@@ -77,7 +77,7 @@ final class VCSTabState {
     var remoteBranches: [String] = []
     var isLoadingRemoteBranches = false
     var isGhInstalled = true
-    var aheadBehind = GitRepositoryService.AheadBehind(ahead: 0, behind: 0, hasUpstream: false)
+    var aheadBehind = VCSAheadBehind(ahead: 0, behind: 0, hasUpstream: false)
     var isOpeningPullRequest = false
     var openPullRequestError: String?
     var isMergingPullRequest = false
@@ -85,7 +85,21 @@ final class VCSTabState {
     var isRefreshingPullRequest = false
     var hasFetchedPullRequestInfo = false
     private(set) var isGitRepo = false
+    private(set) var vcsKind: VCSKind?
     private(set) var remoteWebURL: URL?
+    private(set) var parentChangeDescription: String?
+
+    var isJujutsu: Bool {
+        vcsKind?.isJujutsu == true
+    }
+
+    var isJJNative: Bool {
+        vcsKind == .jjNative
+    }
+
+    var allChangedFiles: [VCSStatusFile] {
+        files
+    }
 
     var commitMessage = ""
     var branches: [String] = []
@@ -98,7 +112,7 @@ final class VCSTabState {
     var statusIsError = false
     var showPushUpstreamConfirmation = false
 
-    var commits: [GitCommit] = []
+    var commits: [VCSCommit] = []
     var isLoadingCommits = false
     var hasMoreCommits = true
     var stagedCollapsed = false {
@@ -138,11 +152,11 @@ final class VCSTabState {
     var pullRequestAutoSyncMinutes: Int = 0
     var checkingOutPRNumber: Int?
 
-    var stagedFiles: [GitStatusFile] {
+    var stagedFiles: [VCSStatusFile] {
         files.filter(\.isStaged)
     }
 
-    var unstagedFiles: [GitStatusFile] {
+    var unstagedFiles: [VCSStatusFile] {
         files.filter(\.isUnstaged)
     }
 
@@ -174,6 +188,7 @@ final class VCSTabState {
         return true
     }
 
+    @ObservationIgnored private let vcs = VCSRepositoryService()
     @ObservationIgnored private let git = GitRepositoryService()
     @ObservationIgnored private var loadFilesTask: Task<Void, Never>?
     @ObservationIgnored private var branchTask: Task<Void, Never>?
@@ -283,15 +298,18 @@ final class VCSTabState {
         branchTask = Task { [weak self] in
             guard let self else { return }
             do {
-                async let branchValue = git.currentBranch(repoPath: projectPath)
-                async let headValue = git.headSha(repoPath: projectPath)
-                async let remoteURLValue = git.remoteWebURL(repoPath: projectPath)
+                let detectedVCS = await VCSKind.detect(at: projectPath)
+                vcsKind = detectedVCS
+                isGitRepo = detectedVCS != nil
+
+                async let branchValue = vcs.currentBranch(repoPath: projectPath)
+                async let headValue = vcs.headSha(repoPath: projectPath)
+                async let remoteURLValue = vcs.remoteWebURL(repoPath: projectPath)
                 let branch = try await branchValue
                 let head = await headValue
                 let remoteURL = await remoteURLValue
                 guard !Task.isCancelled else { return }
 
-                isGitRepo = true
                 remoteWebURL = remoteURL
                 let branchChanged = branchName != branch
                 if branchChanged {
@@ -301,15 +319,27 @@ final class VCSTabState {
                 }
                 branchName = branch
 
+                let isNativeJJ = detectedVCS == .jjNative
                 let headChanged = head != lastFetchedHeadSha
                 let neverFetched = !hasFetchedPullRequestInfo
-                if shouldForcePR || branchChanged || headChanged || neverFetched {
+                if !isNativeJJ, shouldForcePR || branchChanged || headChanged || neverFetched {
                     fetchPRInfo(branch: branch, headSha: head, forceFresh: shouldForcePR)
+                } else if isNativeJJ {
+                    hasFetchedPullRequestInfo = true
+                    isRefreshingPullRequest = false
                 }
 
-                let counts = await git.aheadBehind(repoPath: projectPath, branch: branch)
+                let counts = await vcs.aheadBehind(repoPath: projectPath, branch: branch)
                 guard !Task.isCancelled else { return }
                 aheadBehind = counts
+
+                if detectedVCS?.isJujutsu == true {
+                    let parentDesc = await fetchParentChangeDescription()
+                    guard !Task.isCancelled else { return }
+                    parentChangeDescription = parentDesc
+                } else {
+                    parentChangeDescription = nil
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 branchName = nil
@@ -317,6 +347,7 @@ final class VCSTabState {
                 hasFetchedPullRequestInfo = false
                 lastFetchedHeadSha = nil
                 aheadBehind = .init(ahead: 0, behind: 0, hasUpstream: false)
+                parentChangeDescription = nil
                 isRefreshingPullRequest = false
             }
         }
@@ -336,7 +367,7 @@ final class VCSTabState {
                 }
             }
             do {
-                let newFiles = try await git.changedFiles(repoPath: projectPath)
+                let newFiles = try await vcs.changedFiles(repoPath: projectPath)
                 guard !Task.isCancelled else { return }
 
                 let oldFilesByPath = Dictionary(files.map { ($0.path, $0) }, uniquingKeysWith: { _, b in b })
@@ -392,7 +423,7 @@ final class VCSTabState {
         }
     }
 
-    private static func fileChanged(old: GitStatusFile, new: GitStatusFile) -> Bool {
+    private static func fileChanged(old: VCSStatusFile, new: VCSStatusFile) -> Bool {
         old.xStatus != new.xStatus
             || old.yStatus != new.yStatus
             || old.isBinary != new.isBinary
@@ -425,7 +456,7 @@ final class VCSTabState {
         setExpanded(files: files, expanded: true)
     }
 
-    func setExpanded(files: [GitStatusFile], expanded: Bool) {
+    func setExpanded(files: [VCSStatusFile], expanded: Bool) {
         if expanded {
             var updated = expandedFilePaths
             var toLoad: [String] = []
@@ -491,7 +522,7 @@ final class VCSTabState {
         let binary: Bool
     }
 
-    func displayedStats(for file: GitStatusFile) -> FileStats {
+    func displayedStats(for file: VCSStatusFile) -> FileStats {
         if let loaded = diffCache.diff(for: file.path) {
             return FileStats(additions: loaded.additions, deletions: loaded.deletions, binary: false)
         }
@@ -508,7 +539,7 @@ final class VCSTabState {
                 self.loadBranchesTask = nil
             }
             do {
-                let result = try await git.listBranches(repoPath: projectPath)
+                let result = try await vcs.listBranches(repoPath: projectPath)
                 guard !Task.isCancelled else { return }
                 branches = result
             } catch {
@@ -525,7 +556,7 @@ final class VCSTabState {
             guard let self else { return }
             defer { isSwitchingBranch = false }
             do {
-                try await git.switchBranch(repoPath: projectPath, branch: name)
+                try await vcs.switchBranch(repoPath: projectPath, branch: name)
                 guard !Task.isCancelled else { return }
                 branchName = name
                 commits = []
@@ -546,7 +577,7 @@ final class VCSTabState {
             guard let self else { return }
             defer { isSwitchingBranch = false }
             do {
-                try await git.createAndSwitchBranch(repoPath: projectPath, name: trimmed)
+                try await vcs.createAndSwitchBranch(repoPath: projectPath, name: trimmed)
                 guard !Task.isCancelled else { return }
                 branchName = trimmed
                 commits = []
@@ -562,25 +593,25 @@ final class VCSTabState {
 
     func stageFile(_ path: String) {
         performGitOperation {
-            try await self.git.stageFiles(repoPath: self.projectPath, paths: [path])
+            try await self.vcs.stageFiles(repoPath: self.projectPath, paths: [path])
         }
     }
 
     func unstageFile(_ path: String) {
         performGitOperation {
-            try await self.git.unstageFiles(repoPath: self.projectPath, paths: [path])
+            try await self.vcs.unstageFiles(repoPath: self.projectPath, paths: [path])
         }
     }
 
     func stageAll() {
         performGitOperation {
-            try await self.git.stageAll(repoPath: self.projectPath)
+            try await self.vcs.stageAll(repoPath: self.projectPath)
         }
     }
 
     func unstageAll() {
         performGitOperation {
-            try await self.git.unstageAll(repoPath: self.projectPath)
+            try await self.vcs.unstageAll(repoPath: self.projectPath)
         }
     }
 
@@ -589,39 +620,46 @@ final class VCSTabState {
         let isUntracked = file?.xStatus == "?" && file?.yStatus == "?"
         performGitOperation {
             if isUntracked {
-                try await self.git.discardFiles(repoPath: self.projectPath, paths: [], untrackedPaths: [path])
+                try await self.vcs.discardFiles(repoPath: self.projectPath, paths: [], untrackedPaths: [path])
             } else {
-                try await self.git.discardFiles(repoPath: self.projectPath, paths: [path], untrackedPaths: [])
+                try await self.vcs.discardFiles(repoPath: self.projectPath, paths: [path], untrackedPaths: [])
             }
         }
     }
 
     func discardAll() {
         performGitOperation {
-            try await self.git.discardAll(repoPath: self.projectPath)
+            try await self.vcs.discardAll(repoPath: self.projectPath)
         }
     }
 
     func commit() {
         let message = commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty else {
-            showStatus("Enter a commit message.", isError: true)
+            showStatus(isJujutsu ? "Enter a change description." : "Enter a commit message.", isError: true)
             return
         }
-        guard hasStagedChanges else {
-            showStatus("No staged changes to commit.", isError: true)
-            return
+        if isJujutsu {
+            guard hasAnyChanges else {
+                showStatus("No changes to describe.", isError: true)
+                return
+            }
+        } else {
+            guard hasStagedChanges else {
+                showStatus("No staged changes to commit.", isError: true)
+                return
+            }
         }
         isCommitting = true
         Task { [weak self] in
             guard let self else { return }
             defer { isCommitting = false }
             do {
-                let hash = try await git.commit(repoPath: projectPath, message: message)
+                let hash = try await vcs.commit(repoPath: projectPath, message: message)
                 guard !Task.isCancelled else { return }
                 commitMessage = ""
                 commits = []
-                showStatus("Committed \(hash)", isError: false)
+                showStatus(isJujutsu ? "Described change" : "Committed \(hash)", isError: false)
                 performRefresh(incremental: false)
             } catch {
                 guard !Task.isCancelled else { return }
@@ -636,11 +674,13 @@ final class VCSTabState {
             guard let self else { return }
             defer { isPushing = false }
             do {
-                try await git.push(repoPath: projectPath)
+                try await vcs.push(repoPath: projectPath)
                 guard !Task.isCancelled else { return }
                 showStatus("Pushed", isError: false)
                 performRefresh(incremental: false, forcePRFetch: true)
-            } catch GitRepositoryService.GitError.noUpstreamBranch {
+            } catch GitRepositoryService.GitError.noUpstreamBranch,
+                     VCSError.noUpstreamBranch
+            {
                 guard !Task.isCancelled else { return }
                 showPushUpstreamConfirmation = true
             } catch {
@@ -657,9 +697,33 @@ final class VCSTabState {
             guard let self else { return }
             defer { isPushing = false }
             do {
-                try await git.pushSetUpstream(repoPath: projectPath, branch: branch)
+                try await vcs.pushSetUpstream(repoPath: projectPath, branch: branch)
                 guard !Task.isCancelled else { return }
                 showStatus("Pushed to origin/\(branch)", isError: false)
+                performRefresh(incremental: false, forcePRFetch: true)
+            } catch {
+                guard !Task.isCancelled else { return }
+                showStatus(errorText(error), isError: true)
+            }
+        }
+    }
+
+    func pushCurrentChange() {
+        guard isJujutsu else { return }
+        isPushing = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { isPushing = false }
+            do {
+                let result = try await JJProcessRunner.runJJ(
+                    repoPath: projectPath,
+                    arguments: ["git", "push", "-c", "@", "--no-pager"]
+                )
+                guard result.status == 0 else {
+                    throw VCSError.commandFailed(result.stderr.isEmpty ? "Failed to push." : result.stderr)
+                }
+                guard !Task.isCancelled else { return }
+                showStatus("Pushed current change", isError: false)
                 performRefresh(incremental: false, forcePRFetch: true)
             } catch {
                 guard !Task.isCancelled else { return }
@@ -674,7 +738,7 @@ final class VCSTabState {
             guard let self else { return }
             defer { isPulling = false }
             do {
-                try await git.pull(repoPath: projectPath)
+                try await vcs.pull(repoPath: projectPath)
                 guard !Task.isCancelled else { return }
                 showStatus("Pulled", isError: false)
                 performRefresh(incremental: false)
@@ -692,7 +756,7 @@ final class VCSTabState {
             guard let self else { return }
             defer { isLoadingCommits = false }
             do {
-                let result = try await git.commitLog(repoPath: projectPath, maxCount: Self.commitsPerPage, skip: 0)
+                let result = try await vcs.commitLog(repoPath: projectPath, maxCount: Self.commitsPerPage, skip: 0)
                 guard !Task.isCancelled else { return }
                 commits = result
                 hasMoreCommits = result.count == Self.commitsPerPage
@@ -713,7 +777,7 @@ final class VCSTabState {
             guard let self else { return }
             defer { isLoadingCommits = false }
             do {
-                let result = try await git.commitLog(repoPath: projectPath, maxCount: Self.commitsPerPage, skip: skip)
+                let result = try await vcs.commitLog(repoPath: projectPath, maxCount: Self.commitsPerPage, skip: skip)
                 guard !Task.isCancelled else { return }
                 commits.append(contentsOf: result)
                 hasMoreCommits = result.count == Self.commitsPerPage
@@ -727,7 +791,7 @@ final class VCSTabState {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await git.cherryPick(repoPath: projectPath, hash: hash)
+                try await vcs.cherryPick(repoPath: projectPath, hash: hash)
                 guard !Task.isCancelled else { return }
                 commits = []
                 showStatus("Cherry-picked \(String(hash.prefix(7)))", isError: false)
@@ -743,7 +807,7 @@ final class VCSTabState {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await git.revert(repoPath: projectPath, hash: hash)
+                try await vcs.revert(repoPath: projectPath, hash: hash)
                 guard !Task.isCancelled else { return }
                 commitMessage = "Revert: \(subject)"
                 showStatus("Reverted \(String(hash.prefix(7)))", isError: false)
@@ -760,7 +824,7 @@ final class VCSTabState {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await git.createBranch(repoPath: projectPath, name: trimmedName, startPoint: hash)
+                try await vcs.createBranch(repoPath: projectPath, name: trimmedName, startPoint: hash)
                 guard !Task.isCancelled else { return }
                 showStatus("Created branch \(trimmedName)", isError: false)
                 loadBranches()
@@ -777,7 +841,7 @@ final class VCSTabState {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await git.createTag(repoPath: projectPath, name: trimmedName, hash: hash)
+                try await vcs.createTag(repoPath: projectPath, name: trimmedName, hash: hash)
                 guard !Task.isCancelled else { return }
                 showStatus("Created tag \(trimmedName)", isError: false)
                 loadCommits()
@@ -792,7 +856,7 @@ final class VCSTabState {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await git.checkoutDetached(repoPath: projectPath, hash: hash)
+                try await vcs.checkoutDetached(repoPath: projectPath, hash: hash)
                 guard !Task.isCancelled else { return }
                 commits = []
                 showStatus("Checked out \(String(hash.prefix(7)))", isError: false)
@@ -1057,7 +1121,7 @@ final class VCSTabState {
 
     func switchBranchAndRefresh(_ name: String) async {
         do {
-            try await git.switchBranch(repoPath: projectPath, branch: name)
+            try await vcs.switchBranch(repoPath: projectPath, branch: name)
             branchName = name
             commits = []
             performRefresh(incremental: false)
@@ -1068,7 +1132,11 @@ final class VCSTabState {
 
     func deleteLocalBranch(_ name: String) async {
         do {
-            try await GitWorktreeService.shared.deleteBranch(repoPath: projectPath, branch: name)
+            if vcsKind?.isJujutsu == true {
+                _ = try await JJProcessRunner.runJJ(repoPath: projectPath, arguments: ["bookmark", "delete", name])
+            } else {
+                try await GitWorktreeService.shared.deleteBranch(repoPath: projectPath, branch: name)
+            }
             loadBranches()
             showStatus("Deleted branch \(name)", isError: false)
         } catch {
@@ -1087,6 +1155,18 @@ final class VCSTabState {
 
     private func errorText(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+
+    private func fetchParentChangeDescription() async -> String? {
+        guard let result = try? await JJProcessRunner.runJJ(
+            repoPath: projectPath,
+            arguments: ["log", "--no-graph", "-r", "@-", "-T", "description.first_line()", "--no-pager"]
+        ),
+            result.status == 0
+        else { return nil }
+        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "(no description set)" { return nil }
+        return trimmed
     }
 
     private func diffHints(for filePath: String) -> GitRepositoryService.DiffHints {
@@ -1114,7 +1194,7 @@ final class VCSTabState {
                 pinnedPaths: expandedFilePaths
             ),
             cache: diffCache,
-            git: git
+            vcs: vcs
         )
     }
 
@@ -1263,7 +1343,7 @@ final class VCSTabState {
                 pinnedPaths: expandedFilePaths.union([filePath])
             ),
             cache: diffCache,
-            git: git
+            vcs: vcs
         )
     }
 }
@@ -1278,7 +1358,7 @@ enum VCSFileTree {
 
     enum Row: Equatable, Identifiable {
         case folder(Folder)
-        case file(GitStatusFile, depth: Int)
+        case file(VCSStatusFile, depth: Int)
 
         var id: String {
             switch self {
@@ -1290,12 +1370,12 @@ enum VCSFileTree {
         }
     }
 
-    static func rows(files: [GitStatusFile], expandedFolders: Set<String>) -> [Row] {
+    static func rows(files: [VCSStatusFile], expandedFolders: Set<String>) -> [Row] {
         let root = buildTree(files: files)
         return flattenRows(node: root, depth: 0, expandedFolders: expandedFolders)
     }
 
-    private static func buildTree(files: [GitStatusFile]) -> VCSFileTreeNode {
+    private static func buildTree(files: [VCSStatusFile]) -> VCSFileTreeNode {
         let root = VCSFileTreeNode()
 
         for file in files {
@@ -1388,7 +1468,7 @@ enum VCSFileTree {
 
 private final class VCSFileTreeNode {
     var folders: [String: VCSFileTreeNode] = [:]
-    var files: [GitStatusFile] = []
+    var files: [VCSStatusFile] = []
 
     var totalFileCount: Int {
         files.count + folders.values.reduce(0) { $0 + $1.totalFileCount }

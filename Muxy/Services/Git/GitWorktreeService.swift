@@ -1,6 +1,6 @@
 import Foundation
 
-struct GitWorktreeRecord: Hashable {
+struct GitWorktreeRecord: VCSWorktreeRecordProtocol, Hashable {
     let path: String
     let branch: String?
     let head: String?
@@ -25,7 +25,7 @@ struct GitWorktreeRecord: Hashable {
     }
 }
 
-protocol GitWorktreeListing {
+protocol GitWorktreeListing: VCSWorktreeListing {
     func listWorktrees(repoPath: String) async throws -> [GitWorktreeRecord]
 }
 
@@ -53,6 +53,10 @@ actor GitWorktreeService: GitWorktreeListing {
         return result.status == 0 && result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
     }
 
+    func isRepository(_ path: String) async -> Bool {
+        await isGitRepository(path)
+    }
+
     func hasUncommittedChanges(worktreePath: String) async -> Bool {
         guard let result = try? runGit(
             repoPath: worktreePath,
@@ -73,6 +77,11 @@ actor GitWorktreeService: GitWorktreeListing {
             )
         }
         return parsePorcelain(result.stdout)
+    }
+
+    func listWorktrees(repoPath: String) async throws -> [any VCSWorktreeRecordProtocol] {
+        let records: [GitWorktreeRecord] = try await listWorktrees(repoPath: repoPath)
+        return records
     }
 
     static let allowedBranchCharacters = CharacterSet.alphanumerics

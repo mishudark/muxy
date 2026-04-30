@@ -88,7 +88,12 @@ struct WorktreePopover: View {
     }
 
     private func requestRemove(worktree: Worktree) async {
-        let hasChanges = await GitWorktreeService.shared.hasUncommittedChanges(worktreePath: worktree.path)
+        let hasChanges: Bool
+        if project.vcsKind?.isJujutsu == true {
+            hasChanges = await JJWorktreeService.shared.hasUncommittedChanges(worktreePath: worktree.path)
+        } else {
+            hasChanges = await GitWorktreeService.shared.hasUncommittedChanges(worktreePath: worktree.path)
+        }
         if !hasChanges {
             performRemove(worktree: worktree)
             return
@@ -132,7 +137,8 @@ struct WorktreePopover: View {
         Task.detached {
             await WorktreeStore.cleanupOnDisk(
                 worktree: worktree,
-                repoPath: repoPath
+                repoPath: repoPath,
+                vcsKind: project.vcsKind
             )
         }
     }

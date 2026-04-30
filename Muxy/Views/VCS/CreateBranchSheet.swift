@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CreateBranchSheet: View {
     let currentBranch: String?
+    let isJujutsu: Bool
     let onCreate: (String) -> Void
     let onCancel: () -> Void
 
@@ -16,13 +17,17 @@ struct CreateBranchSheet: View {
         !trimmed.isEmpty
     }
 
+    private var entityLabel: String {
+        isJujutsu ? "Bookmark" : "Branch"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New Branch")
+            Text("New \(entityLabel)")
                 .font(.system(size: 14, weight: .semibold))
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Branch Name")
+                Text("\(entityLabel) Name")
                     .font(.system(size: 11))
                     .foregroundStyle(MuxyTheme.fgMuted)
                 TextField("feature-x", text: $name)

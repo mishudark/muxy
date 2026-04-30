@@ -16,7 +16,11 @@ struct VCSTabView: View {
     @State private var pendingClosePR: GitRepositoryService.PRInfo?
     @State private var pendingCheckoutPR: GitRepositoryService.PRListItem?
     private var commitEnabled: Bool {
-        state.hasStagedChanges && !state.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasMessage = !state.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if state.isJujutsu {
+            return state.hasAnyChanges && hasMessage
+        }
+        return state.hasStagedChanges && hasMessage
     }
 
     private var owningProject: Project? {
@@ -107,12 +111,14 @@ struct VCSTabView: View {
         HStack(spacing: 6) {
             worktreeBranchPicker
 
-            PRPill(
-                state: state,
-                onRequestCreate: { requestOpenPR() },
-                onRequestMerge: { prInfo, method in performMerge(prInfo: prInfo, method: method) },
-                onRequestClose: { prInfo in pendingClosePR = prInfo }
-            )
+            if state.vcsKind != .jjNative {
+                PRPill(
+                    state: state,
+                    onRequestCreate: { requestOpenPR() },
+                    onRequestMerge: { prInfo, method in performMerge(prInfo: prInfo, method: method) },
+                    onRequestClose: { prInfo in pendingClosePR = prInfo }
+                )
+            }
 
             Spacer(minLength: 0)
 
@@ -149,6 +155,7 @@ struct VCSTabView: View {
         .sheet(isPresented: $showCreateBranchSheet) {
             CreateBranchSheet(
                 currentBranch: state.branchName,
+                isJujutsu: state.isJujutsu,
                 onCreate: { name in
                     showCreateBranchSheet = false
                     state.createAndSwitchBranch(name)
@@ -178,6 +185,7 @@ struct VCSTabView: View {
                 branches: state.branches,
                 isLoadingBranches: state.isLoadingBranches,
                 activeWorktree: activeWorktreeForTab,
+                isJujutsu: state.isJujutsu,
                 onSelectBranch: { state.switchBranch($0) },
                 onRefreshBranches: { state.loadBranches() },
                 onCreateBranch: { showCreateBranchSheet = true },
@@ -314,12 +322,15 @@ struct VCSTabView: View {
         Task.detached {
             await WorktreeStore.cleanupOnDisk(
                 worktree: worktree,
-                repoPath: repoPath
-            )
-            try? await GitRepositoryService().deleteRemoteBranch(
                 repoPath: repoPath,
-                branch: mergedBranch
+                vcsKind: project.vcsKind
             )
+            if project.vcsKind?.isJujutsu != true {
+                try? await GitRepositoryService().deleteRemoteBranch(
+                    repoPath: repoPath,
+                    branch: mergedBranch
+                )
+            }
         }
     }
 
@@ -375,7 +386,7 @@ struct VCSTabView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             VStack(spacing: 0) {
-                if showInlinePRForm {
+                if showInlinePRForm, state.vcsKind != .jjNative {
                     createPRForm
                 } else {
                     commitArea
@@ -431,7 +442,10 @@ struct VCSTabView: View {
         VStack(spacing: 8) {
             ZStack(alignment: .topLeading) {
                 if state.commitMessage.isEmpty {
-                    Text("Commit message (⌘↵ to commit on \(state.branchName ?? "branch"))")
+                    let placeholder = state.isJujutsu
+                        ? "Describe change (⌘↵ to describe)"
+                        : "Commit message (⌘↵ to commit on \(state.branchName ?? "branch"))"
+                    Text(placeholder)
                         .font(.system(size: 12))
                         .foregroundStyle(MuxyTheme.fgDim)
                         .padding(.horizontal, 10)
@@ -456,10 +470,40 @@ struct VCSTabView: View {
             .background(MuxyTheme.surface, in: RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(MuxyTheme.border, lineWidth: 1))
 
+            if state.isJujutsu, let parentDesc = state.parentChangeDescription {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.merge")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(MuxyTheme.fgMuted)
+                    Text("Building on: \(parentDesc)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(MuxyTheme.fgMuted)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button {
+                        state.stageAll()
+                    } label: {
+                        Text("Squash All")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(MuxyTheme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!state.hasAnyChanges)
+                    .help("Squash all working copy changes into parent change")
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(MuxyTheme.surface, in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(MuxyTheme.border, lineWidth: 1))
+            }
+
             HStack(spacing: 6) {
                 commitButton
                 pullButton
                 pushButton
+                if state.isJujutsu {
+                    pushCurrentChangeButton
+                }
             }
         }
         .padding(10)
@@ -477,7 +521,7 @@ struct VCSTabView: View {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .bold))
                 }
-                Text("Commit")
+                Text(state.isJujutsu ? "Describe & New" : "Commit")
                     .font(.system(size: 11, weight: .medium))
             }
             .foregroundStyle(commitEnabled ? MuxyTheme.bg : MuxyTheme.fgDim)
@@ -494,7 +538,7 @@ struct VCSTabView: View {
         }
         .buttonStyle(.plain)
         .disabled(!commitEnabled || state.isCommitting)
-        .help("Commit staged changes")
+        .help(state.isJujutsu ? "Describe current change and start new one" : "Commit staged changes")
     }
 
     private var pullButton: some View {
@@ -567,6 +611,32 @@ struct VCSTabView: View {
             : "Push to origin")
     }
 
+    private var pushCurrentChangeButton: some View {
+        Button {
+            state.pushCurrentChange()
+        } label: {
+            HStack(spacing: 4) {
+                if state.isPushing {
+                    ProgressView().controlSize(.mini)
+                        .scaleEffect(0.7)
+                } else {
+                    Image(systemName: "arrow.turn.right.up")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                Text("Push @")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(MuxyTheme.fgMuted)
+            .padding(.horizontal, 6)
+            .frame(height: Self.actionButtonHeight)
+            .background(MuxyTheme.surface, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(MuxyTheme.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(state.isPushing)
+        .help("Push current change directly (jj git push -c @)")
+    }
+
     private static let actionButtonHeight: CGFloat = 28
 
     private func presentDiscardConfirmation(
@@ -602,8 +672,10 @@ struct VCSTabView: View {
         else { return }
 
         let alert = NSAlert()
-        alert.messageText = "Delete Branch?"
-        alert.informativeText = "This will permanently delete the local branch \"\(branch)\". Unmerged commits on this branch will be lost."
+        alert.messageText = state.isJujutsu ? "Delete Bookmark?" : "Delete Branch?"
+        alert.informativeText = state.isJujutsu
+            ? "This will permanently delete the local bookmark \"\(branch)\"."
+            : "This will permanently delete the local branch \"\(branch)\". Unmerged commits on this branch will be lost."
         alert.alertStyle = .warning
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "Delete")
@@ -693,11 +765,14 @@ struct VCSSectionVisibilityMenu: View {
     }
 
     private var rows: [Row] {
-        [
+        var result: [Row] = [
             Row(id: "Changes", visible: state.changesVisible) { state.setChangesVisible(!state.changesVisible) },
-            Row(id: "Pull Requests", visible: state.pullRequestsVisible) { state.setPullRequestsVisible(!state.pullRequestsVisible) },
-            Row(id: "History", visible: state.historyVisible) { state.setHistoryVisible(!state.historyVisible) },
         ]
+        if state.vcsKind != .jjNative {
+            result.append(Row(id: "Pull Requests", visible: state.pullRequestsVisible) { state.setPullRequestsVisible(!state.pullRequestsVisible) })
+        }
+        result.append(Row(id: "History", visible: state.historyVisible) { state.setHistoryVisible(!state.historyVisible) })
+        return result
     }
 
     var body: some View {
@@ -1179,13 +1254,13 @@ private struct SectionSplitLayout: View {
 
     private static let sectionHeaderHeight: CGFloat = 30
 
-    private var hasStaged: Bool { !state.stagedFiles.isEmpty }
+    private var hasStaged: Bool { !state.isJujutsu && !state.stagedFiles.isEmpty }
 
     private var sections: [SectionKind] {
         var result: [SectionKind] = []
         if hasStaged { result.append(.staged) }
         if state.changesVisible { result.append(.changes) }
-        if state.pullRequestsVisible { result.append(.pullRequests) }
+        if state.pullRequestsVisible, state.vcsKind != .jjNative { result.append(.pullRequests) }
         if state.historyVisible { result.append(.history) }
         return result
     }
@@ -1349,9 +1424,10 @@ private struct SectionSplitLayout: View {
             .frame(height: height)
 
         case .changes:
+            let displayFiles = state.isJujutsu ? state.allChangedFiles : state.unstagedFiles
             VStack(spacing: 0) {
                 sectionHeader(for: .changes, collapsed: false)
-                if state.files.isEmpty {
+                if displayFiles.isEmpty {
                     Text("No changes")
                         .font(.system(size: 12))
                         .foregroundStyle(MuxyTheme.fgMuted)
@@ -1359,7 +1435,7 @@ private struct SectionSplitLayout: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            fileList(for: state.unstagedFiles, isStaged: false)
+                            fileList(for: displayFiles, isStaged: false)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1446,11 +1522,13 @@ private struct SectionSplitLayout: View {
         case .changes:
             fileListModeToggle
             diffModeToggle
-            expandCollapseButton(for: state.unstagedFiles)
-            IconButton(symbol: "plus", size: 11, accessibilityLabel: "Stage All") {
-                state.stageAll()
+            expandCollapseButton(for: state.isJujutsu ? state.allChangedFiles : state.unstagedFiles)
+            if !state.isJujutsu {
+                IconButton(symbol: "plus", size: 11, accessibilityLabel: "Stage All") {
+                    state.stageAll()
+                }
+                .help("Stage all")
             }
-            .help("Stage all")
 
             IconButton(symbol: "arrow.uturn.backward", size: 11, accessibilityLabel: "Discard All Changes") {
                 showDiscardAllConfirmation = true
@@ -1505,7 +1583,7 @@ private struct SectionSplitLayout: View {
     }
 
     @ViewBuilder
-    private func expandCollapseButton(for files: [GitStatusFile]) -> some View {
+    private func expandCollapseButton(for files: [VCSStatusFile]) -> some View {
         let anyExpanded = files.contains { state.expandedFilePaths.contains($0.path) }
         Button {
             state.setExpanded(files: files, expanded: !anyExpanded)
@@ -1521,7 +1599,7 @@ private struct SectionSplitLayout: View {
     }
 
     @ViewBuilder
-    private func fileList(for files: [GitStatusFile], isStaged: Bool) -> some View {
+    private func fileList(for files: [VCSStatusFile], isStaged: Bool) -> some View {
         if state.fileListMode == .flat {
             ForEach(files) { file in
                 fileSection(file, isStaged: isStaged)
@@ -1563,7 +1641,7 @@ private struct SectionSplitLayout: View {
     }
 
     private func fileSection(
-        _ file: GitStatusFile,
+        _ file: VCSStatusFile,
         isStaged: Bool,
         displayPath: String? = nil,
         depth: Int = 0
@@ -1581,6 +1659,8 @@ private struct SectionSplitLayout: View {
                 isStaged: isStaged,
                 displayPath: displayPath ?? file.path,
                 depth: depth,
+                isJujutsu: state.isJujutsu,
+                showSquashAction: state.isJujutsu && state.parentChangeDescription != nil,
                 onToggle: {
                     onFocus()
                     state.toggleExpanded(filePath: file.path)
@@ -1601,7 +1681,7 @@ private struct SectionSplitLayout: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func expandedDiff(for file: GitStatusFile) -> some View {
+    private func expandedDiff(for file: VCSStatusFile) -> some View {
         DiffBodyView(
             isLoading: state.diffCache.isLoading(file.path),
             error: state.diffCache.error(for: file.path),
@@ -1636,13 +1716,15 @@ private extension Array {
 }
 
 private struct FileRow: View {
-    let file: GitStatusFile
+    let file: VCSStatusFile
     let statusText: String
     let expanded: Bool
     let stats: VCSTabState.FileStats
     let isStaged: Bool
     let displayPath: String
     let depth: Int
+    let isJujutsu: Bool
+    let showSquashAction: Bool
     let onToggle: () -> Void
     let onStage: () -> Void
     let onUnstage: () -> Void
@@ -1727,7 +1809,14 @@ private struct FileRow: View {
                 .help("Open in Editor")
             IconButton(symbol: "rectangle.split.2x1", size: 11, accessibilityLabel: "Open Diff in New Tab", action: onOpenDiff)
                 .help("Open Diff in New Tab")
-            if isStaged {
+            if isJujutsu {
+                if showSquashAction {
+                    IconButton(symbol: "arrow.triangle.merge", size: 11, accessibilityLabel: "Squash into parent", action: onStage)
+                        .help("Squash into parent change")
+                }
+                IconButton(symbol: "arrow.uturn.backward", size: 11, accessibilityLabel: "Discard Changes", action: onDiscard)
+                    .help("Discard changes")
+            } else if isStaged {
                 IconButton(symbol: "minus", size: 11, accessibilityLabel: "Unstage", action: onUnstage)
                     .help("Unstage")
             } else {

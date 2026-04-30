@@ -485,7 +485,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
             )
         }
 
-        await WorktreeStore.cleanupOnDisk(worktree: worktree, repoPath: project.path)
+        await WorktreeStore.cleanupOnDisk(worktree: worktree, repoPath: project.path, vcsKind: project.vcsKind)
         worktreeStore.remove(worktreeID: worktreeID, from: projectID)
     }
 

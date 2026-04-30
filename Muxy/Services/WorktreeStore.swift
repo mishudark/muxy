@@ -9,17 +9,21 @@ final class WorktreeStore {
     private(set) var worktrees: [UUID: [Worktree]] = [:]
     private var projectIDByPath: [String: UUID] = [:]
     private let persistence: any WorktreePersisting
-    private let listGitWorktrees: @Sendable (String) async throws -> [GitWorktreeRecord]
+    private let listVCSWorktrees: @Sendable (String) async throws -> [any VCSWorktreeRecordProtocol]
 
     init(
         persistence: any WorktreePersisting,
-        listGitWorktrees: @escaping @Sendable (String) async throws -> [GitWorktreeRecord] = {
-            try await GitWorktreeService.shared.listWorktrees(repoPath: $0)
+        listVCSWorktrees: @escaping @Sendable (String) async throws -> [any VCSWorktreeRecordProtocol] = {
+            let kind = await VCSKind.detect(at: $0)
+            if kind?.isJujutsu == true {
+                return try await JJWorktreeService.shared.listWorktrees(repoPath: $0)
+            }
+            return try await GitWorktreeService.shared.listWorktrees(repoPath: $0)
         },
         projects: [Project] = []
     ) {
         self.persistence = persistence
-        self.listGitWorktrees = listGitWorktrees
+        self.listVCSWorktrees = listVCSWorktrees
         guard !projects.isEmpty else { return }
         loadAll(projects: projects)
     }
@@ -86,9 +90,18 @@ final class WorktreeStore {
         save(projectID: projectID)
     }
 
-    func refreshFromGit(project: Project) async throws -> [Worktree] {
+    func refreshFromVCS(project: Project) async throws -> [Worktree] {
         ensurePrimary(for: project)
-        let records = try await listGitWorktrees(project.path).filter { !$0.isBare && !$0.isPrunable }
+        let allRecords = try await listVCSWorktrees(project.path)
+        let records: [any VCSWorktreeRecordProtocol]
+        if project.vcsKind?.isJujutsu == true {
+            records = allRecords
+        } else {
+            records = allRecords.filter { record in
+                guard let gitRecord = record as? GitWorktreeRecord else { return true }
+                return !gitRecord.isBare && !gitRecord.isPrunable
+            }
+        }
         var list = worktrees[project.id] ?? []
         let projectKey = Self.canonicalPath(project.path)
         let recordKeys = Set(records.map { Self.canonicalPath($0.path) })
@@ -155,27 +168,36 @@ final class WorktreeStore {
 
     static func cleanupOnDisk(
         worktree: Worktree,
-        repoPath: String
+        repoPath: String,
+        vcsKind: VCSKind?
     ) async {
         guard worktree.canBeRemoved else { return }
-        do {
-            try await GitWorktreeService.shared.removeWorktree(
-                repoPath: repoPath,
-                path: worktree.path,
-                force: true
-            )
-        } catch {
-            logger.error("Failed to remove git worktree at \(worktree.path): \(error)")
-        }
-
-        if worktree.ownsBranch,
-           let branch = worktree.branch?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !branch.isEmpty
-        {
+        if vcsKind?.isJujutsu == true {
             do {
-                try await GitWorktreeService.shared.deleteBranch(repoPath: repoPath, branch: branch)
+                try await JJWorktreeService.shared.removeWorktree(repoPath: repoPath, path: worktree.path)
             } catch {
-                logger.error("Failed to delete branch \(branch) for worktree \(worktree.path): \(error)")
+                logger.error("Failed to remove jj workspace at \(worktree.path): \(error)")
+            }
+        } else {
+            do {
+                try await GitWorktreeService.shared.removeWorktree(
+                    repoPath: repoPath,
+                    path: worktree.path,
+                    force: true
+                )
+            } catch {
+                logger.error("Failed to remove git worktree at \(worktree.path): \(error)")
+            }
+
+            if worktree.ownsBranch,
+               let branch = worktree.branch?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !branch.isEmpty
+            {
+                do {
+                    try await GitWorktreeService.shared.deleteBranch(repoPath: repoPath, branch: branch)
+                } catch {
+                    logger.error("Failed to delete branch \(branch) for worktree \(worktree.path): \(error)")
+                }
             }
         }
 
@@ -186,7 +208,7 @@ final class WorktreeStore {
     static func cleanupOnDisk(for project: Project, knownWorktrees: [Worktree]) async {
         let secondaryWorktrees = knownWorktrees.filter(\.canBeRemoved)
         for worktree in secondaryWorktrees {
-            await cleanupOnDisk(worktree: worktree, repoPath: project.path)
+            await cleanupOnDisk(worktree: worktree, repoPath: project.path, vcsKind: project.vcsKind)
         }
 
         let root = MuxyFileStorage.worktreeRoot(forProjectID: project.id)
@@ -194,11 +216,15 @@ final class WorktreeStore {
         let children = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
         for child in children {
             let childPath = root.appendingPathComponent(child).path
-            try? await GitWorktreeService.shared.removeWorktree(
-                repoPath: project.path,
-                path: childPath,
-                force: true
-            )
+            if project.vcsKind?.isJujutsu == true {
+                try? await JJWorktreeService.shared.removeWorktree(repoPath: project.path, path: childPath)
+            } else {
+                try? await GitWorktreeService.shared.removeWorktree(
+                    repoPath: project.path,
+                    path: childPath,
+                    force: true
+                )
+            }
             try? FileManager.default.removeItem(atPath: childPath)
         }
         try? FileManager.default.removeItem(at: root)
@@ -280,7 +306,7 @@ final class WorktreeStore {
         }
     }
 
-    private func defaultName(for record: GitWorktreeRecord) -> String {
+    private func defaultName(for record: any VCSWorktreeRecordProtocol) -> String {
         if let branch = record.branch?.trimmingCharacters(in: .whitespacesAndNewlines),
            !branch.isEmpty
         {
