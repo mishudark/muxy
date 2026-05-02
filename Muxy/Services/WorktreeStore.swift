@@ -9,17 +9,17 @@ final class WorktreeStore {
     private(set) var worktrees: [UUID: [Worktree]] = [:]
     private var projectIDByPath: [String: UUID] = [:]
     private let persistence: any WorktreePersisting
-    private let listGitWorktrees: @Sendable (String) async throws -> [GitWorktreeRecord]
+    private let listVCSWorktrees: @Sendable (String) async throws -> [GitWorktreeRecord]
 
     init(
         persistence: any WorktreePersisting,
-        listGitWorktrees: @escaping @Sendable (String) async throws -> [GitWorktreeRecord] = {
-            try await GitWorktreeService.shared.listWorktrees(repoPath: $0)
+        listVCSWorktrees: @escaping @Sendable (String) async throws -> [GitWorktreeRecord] = {
+            try await VCSProvider.shared.listWorktrees(repoPath: $0)
         },
         projects: [Project] = []
     ) {
         self.persistence = persistence
-        self.listGitWorktrees = listGitWorktrees
+        self.listVCSWorktrees = listVCSWorktrees
         guard !projects.isEmpty else { return }
         loadAll(projects: projects)
     }
@@ -86,9 +86,9 @@ final class WorktreeStore {
         save(projectID: projectID)
     }
 
-    func refreshFromGit(project: Project) async throws -> [Worktree] {
+    func refreshFromVCS(project: Project) async throws -> [Worktree] {
         ensurePrimary(for: project)
-        let records = try await listGitWorktrees(project.path).filter { !$0.isBare && !$0.isPrunable }
+        let records = try await listVCSWorktrees(project.path).filter { !$0.isBare && !$0.isPrunable }
         var list = worktrees[project.id] ?? []
         let projectKey = Self.canonicalPath(project.path)
         let recordKeys = Set(records.map { Self.canonicalPath($0.path) })
@@ -159,13 +159,13 @@ final class WorktreeStore {
     ) async {
         guard worktree.canBeRemoved else { return }
         do {
-            try await GitWorktreeService.shared.removeWorktree(
+            try await VCSProvider.shared.removeWorktree(
                 repoPath: repoPath,
                 path: worktree.path,
                 force: true
             )
         } catch {
-            logger.error("Failed to remove git worktree at \(worktree.path): \(error)")
+            logger.error("Failed to remove worktree at \(worktree.path): \(error)")
         }
 
         if worktree.ownsBranch,
@@ -173,7 +173,7 @@ final class WorktreeStore {
            !branch.isEmpty
         {
             do {
-                try await GitWorktreeService.shared.deleteBranch(repoPath: repoPath, branch: branch)
+                try await VCSProvider.shared.deleteBranch(repoPath: repoPath, branch: branch)
             } catch {
                 logger.error("Failed to delete branch \(branch) for worktree \(worktree.path): \(error)")
             }
@@ -194,7 +194,7 @@ final class WorktreeStore {
         let children = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
         for child in children {
             let childPath = root.appendingPathComponent(child).path
-            try? await GitWorktreeService.shared.removeWorktree(
+            try? await VCSProvider.shared.removeWorktree(
                 repoPath: project.path,
                 path: childPath,
                 force: true

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct WorktreeBranchPicker: View {
     let project: Project
-    let isGitRepo: Bool
+    let supportsWorktrees: Bool
     let currentBranch: String?
     let branches: [String]
     let isLoadingBranches: Bool
@@ -129,7 +129,7 @@ struct WorktreeBranchPicker: View {
                 case .worktrees:
                     WorktreePopover(
                         project: project,
-                        isGitRepo: isGitRepo,
+                        supportsWorktrees: supportsWorktrees,
                         onDismiss: { showPopover = false },
                         onRequestCreate: {
                             showPopover = false

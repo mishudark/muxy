@@ -64,9 +64,10 @@ Muxy/
     TerminalSettings.swift    Terminal preference keys and quick-select label layout helpers
     ProjectLifecyclePreferences.swift  Project lifecycle preferences (keep-open-when-no-tabs)
     Project.swift             Project folder metadata
-    Worktree.swift            Per-project worktree slot (primary or git worktree)
+    Worktree.swift            Per-project worktree slot (primary, secondary for git worktrees or JJ workspaces)
     WorktreeKey.swift         Hashable (projectID, worktreeID) key for workspace maps
     WorktreeConfig.swift      Decoder for .muxy/worktree.json setup commands
+    VCSKind.swift             Detects git vs jjColocated vs jjNative per project path
     TerminalPaneState.swift   Per-pane terminal state, including startup commands for terminal editors
     TerminalSearchState.swift Terminal find-in-page state
     TerminalQuickSelectState.swift Keyboard quick-select match state and label generation
@@ -102,6 +103,10 @@ Muxy/
       GitDiffParser.swift         Diff patch parsing, context collapsing
       GitStatusParser.swift       Porcelain + numstat output parsing
       GitModels.swift             GitStatusFile, DiffDisplayRow, NumstatEntry
+    Jujutsu/
+      JujutsuWorkspaceService.swift  jj workspace list/add/forget (actor)
+    VCS/
+      VCSProvider.swift           Dispatches worktree operations to Git or JJ based on VCSKind
     GitDirectoryWatcher.swift FSEvents watcher for .git changes
     FileSearchService.swift   Quick open file search via /usr/bin/find subprocess
     FileTreeService.swift     Lazy directory listing that respects .gitignore via git check-ignore
@@ -150,7 +155,7 @@ Muxy/
       ProjectRow.swift          Project icon (first letter or emoji logo), tooltip, context menu with logo + color pickers
       ProjectIconColorPicker.swift  Preset color palette popover for tinting the default letter icon
       WorktreePopover.swift     Worktree picker popover triggered from the active project row
-      CreateWorktreeSheet.swift Sheet for creating a new git worktree
+      CreateWorktreeSheet.swift Sheet for creating a new worktree or JJ workspace
       AIUsagePanel.swift        AI usage popover: preview button, panel header/list, provider and metric rows, used/remaining conversion
     ProviderIconView.swift    Renders SVG provider icons from Muxy/Resources/ProviderIcons with monochrome tinting
     ThemePicker.swift         Theme selection popover (hosted in topbar right)
@@ -225,14 +230,18 @@ Muxy/
 Project → Worktree → SplitNode (splits/tab areas) → TerminalTab → Pane
 ```
 
-Each project has at least one **primary** worktree pointing at `Project.path`. Git
-projects may add more worktrees via `git worktree add`, each with their own split
-tree, tabs, focus state, and working directory. Secondary worktrees can be either
-Muxy-managed checkouts created from the sidebar or externally created Git worktrees
-that are imported into the sidebar with a manual refresh. Workspace state is keyed by
-`WorktreeKey(projectID, worktreeID)` in `AppState` so every per-project map is
-actually per-worktree. `AppState.activeWorktreeID[projectID]` tracks which
-worktree is currently visible for each project.
+Each project has at least one **primary** worktree pointing at `Project.path`.
+Projects may add more worktrees: Git projects use `git worktree add`, while
+Jujutsu projects use `jj workspace add` (creating sibling directories). Secondary
+worktrees can be either Muxy-managed checkouts created from the sidebar or
+externally created worktrees/workspaces that are imported into the sidebar with a
+manual refresh. `VCSProvider` detects the VCS kind (git, jjColocated, jjNative) via
+`VCSKind.detect(at:)` and dispatches worktree operations to the appropriate service
+(`GitWorktreeService` or `JujutsuWorkspaceService`).
+
+Workspace state is keyed by `WorktreeKey(projectID, worktreeID)` in `AppState` so
+every per-project map is actually per-worktree. `AppState.activeWorktreeID[projectID]`
+tracks which worktree is currently visible for each project.
 
 ## Data Flow
 
@@ -270,7 +279,7 @@ User action → AppState.dispatch() → WorkspaceReducer.reduce()
   line; search highlights (temporary attributes) layer on top without losing syntax colors.
 - **GhosttyKit**: C module wrapping `ghostty.h`. Precompiled xcframework from `muxy-app/ghostty` fork. Surfaces created/destroyed via `TerminalViewRegistry`.
 - **Terminal Working Directory Preservation**: When a user navigates within a terminal (e.g., `cd src/`), libghostty emits `GHOSTTY_ACTION_PWD` events. `GhosttyRuntimeEventAdapter` receives these events and routes them via the `onWorkingDirectoryChange` callback to `TerminalPane`, which updates `TerminalPaneState.currentWorkingDirectory`. This directory is persisted to disk through `TerminalTabSnapshot` in `workspaces.json`. On restore, `TerminalTab` initializes each terminal pane with its saved working directory (or the project root if none was saved), allowing terminals to reopen at their last-used directory instead of always starting at the project root.
-- **Persistence**: All files in `~/Library/Application Support/Muxy/`. Shared directory helper: `MuxyFileStorage`. Shortcuts are stored in `keybindings.json`; custom command shortcuts are stored in `command-shortcuts.json`. Worktrees are persisted per-project at `worktrees/{projectID}.json`, including whether a secondary worktree is Muxy-managed or externally discovered. Git projects can manually refresh this list from `git worktree list --porcelain` to import existing worktrees without deleting absent entries; paths are matched after symlink resolution so a repo opened via a symlinked path still collapses onto a single primary entry. Externally discovered worktrees are never touched by Muxy's `cleanupOnDisk` paths (project removal, post-merge cleanup, manual removal) — they can only be unregistered by the user in the underlying repo. Worktree setup commands live in-repo at `{Project.path}/.muxy/worktree.json`.
+- **Persistence**: All files in `~/Library/Application Support/Muxy/`. Shared directory helper: `MuxyFileStorage`. Shortcuts are stored in `keybindings.json`; custom command shortcuts are stored in `command-shortcuts.json`. Worktrees are persisted per-project at `worktrees/{projectID}.json`, including whether a secondary worktree is Muxy-managed or externally discovered. For Git projects, the list is refreshed from `git worktree list --porcelain`; for Jujutsu projects, `jj workspace list` is parsed and workspaces are discovered as sibling directories. Paths are matched after symlink resolution so a repo opened via a symlinked path still collapses onto a single primary entry. Worktree checkout directories differ by VCS: Git uses `~/Library/Application Support/Muxy/worktree-checkouts/{projectID}/{slug}/` while Jujutsu creates sibling directories (`../{slug}`). Externally discovered worktrees are never touched by Muxy's `cleanupOnDisk` paths (project removal, post-merge cleanup, manual removal) — they can only be unregistered by the user in the underlying repo. Worktree setup commands live in-repo at `{Project.path}/.muxy/worktree.json`.
 - **Ghostty Config**: Managed by `MuxyConfig`, stored at `~/Library/Application Support/Muxy/ghostty.conf`. Seeded from `~/.config/ghostty/config` on first run.
 - **Updates**: Sparkle framework via `UpdateService`.
 - **Window Title**: `NSWindow.title` is hidden visually (`titleVisibility = .hidden`) but set

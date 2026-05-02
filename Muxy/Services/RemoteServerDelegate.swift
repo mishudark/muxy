@@ -440,19 +440,17 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
             throw RemoteVCSError.invalidInput("Worktree name is required.")
         }
         let trimmedBranch = branch.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedBranch.isEmpty else {
-            throw RemoteVCSError.invalidInput("Branch name is required.")
-        }
         let slug = Self.worktreeSlug(from: trimmedName)
+        let kind = await VCSKind.detect(at: project.path)
         let worktreeDirectory = MuxyFileStorage
-            .worktreeDirectory(forProjectID: project.id, name: slug)
+            .worktreeDirectory(forProjectID: project.id, name: slug, projectPath: project.path, vcsKind: kind)
             .path(percentEncoded: false)
 
         if FileManager.default.fileExists(atPath: worktreeDirectory) {
             throw RemoteVCSError.invalidInput("A worktree with this name already exists on disk.")
         }
 
-        try await GitWorktreeService.shared.addWorktree(
+        try await VCSProvider.shared.addWorktree(
             repoPath: project.path,
             path: worktreeDirectory,
             branch: trimmedBranch,
@@ -462,7 +460,7 @@ final class RemoteServerDelegate: MuxyRemoteServerDelegate {
         let worktree = Worktree(
             name: trimmedName,
             path: worktreeDirectory,
-            branch: trimmedBranch,
+            branch: trimmedBranch.isEmpty ? nil : trimmedBranch,
             ownsBranch: createBranch,
             isPrimary: false
         )

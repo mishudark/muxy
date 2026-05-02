@@ -13,6 +13,7 @@ struct VCSTabView: View {
     @State private var showCreateWorktreeSheet = false
     @State private var showCreateBranchSheet = false
     @State private var showInlinePRForm = false
+    @State private var supportsWorktrees = false
     @State private var pendingClosePR: GitRepositoryService.PRInfo?
     @State private var pendingCheckoutPR: GitRepositoryService.PRListItem?
     private var commitEnabled: Bool {
@@ -44,6 +45,9 @@ struct VCSTabView: View {
             if !state.hasCompletedInitialLoad, !state.isLoadingFiles {
                 state.refresh()
             }
+        }
+        .task(id: state.projectPath) {
+            supportsWorktrees = await VCSProvider.shared.isRepository(state.projectPath)
         }
         .onChange(of: state.projectPath) {
             if !state.hasCompletedInitialLoad, !state.isLoadingFiles {
@@ -173,7 +177,7 @@ struct VCSTabView: View {
         if let project = owningProject {
             WorktreeBranchPicker(
                 project: project,
-                isGitRepo: state.isGitRepo,
+                supportsWorktrees: supportsWorktrees,
                 currentBranch: state.branchName,
                 branches: state.branches,
                 isLoadingBranches: state.isLoadingBranches,

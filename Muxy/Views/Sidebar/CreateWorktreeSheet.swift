@@ -20,9 +20,10 @@ struct CreateWorktreeSheet: View {
     @State private var runSetup = false
     @State private var inProgress = false
     @State private var errorMessage: String?
+    @State private var vcsKind: VCSKind?
 
     private let gitRepository = GitRepositoryService()
-    private let gitWorktree = GitWorktreeService.shared
+    private let vcsProvider = VCSProvider.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -35,29 +36,31 @@ struct CreateWorktreeSheet: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            SegmentedPicker(
-                selection: $createNewBranch,
-                options: [(true, "Create new branch"), (false, "Use existing branch")]
-            )
+            if vcsKind?.isJujutsu != true {
+                SegmentedPicker(
+                    selection: $createNewBranch,
+                    options: [(true, "Create new branch"), (false, "Use existing branch")]
+                )
 
-            if createNewBranch {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Branch Name").font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
-                    TextField("feature-x", text: $branchName)
-                        .textFieldStyle(.roundedBorder)
-                        .onChange(of: branchName) { _, newValue in
-                            branchNameEdited = newValue != name
-                        }
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Branch").font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
-                    Picker("", selection: $selectedExistingBranch) {
-                        ForEach(availableBranches, id: \.self) { branch in
-                            Text(branch).tag(branch)
-                        }
+                if createNewBranch {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Branch Name").font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
+                        TextField("feature-x", text: $branchName)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: branchName) { _, newValue in
+                                branchNameEdited = newValue != name
+                            }
                     }
-                    .labelsHidden()
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Branch").font(.system(size: 11)).foregroundStyle(MuxyTheme.fgMuted)
+                        Picker("", selection: $selectedExistingBranch) {
+                            ForEach(availableBranches, id: \.self) { branch in
+                                Text(branch).tag(branch)
+                            }
+                        }
+                        .labelsHidden()
+                    }
                 }
             }
 
@@ -86,7 +89,10 @@ struct CreateWorktreeSheet: View {
         .padding(20)
         .frame(width: 460)
         .task {
-            await loadBranches()
+            vcsKind = await VCSKind.detect(at: project.path)
+            if vcsKind?.isJujutsu != true {
+                await loadBranches()
+            }
             loadSetupCommands()
         }
         .onChange(of: name) { _, newValue in
@@ -171,6 +177,7 @@ struct CreateWorktreeSheet: View {
 
     private var canCreate: Bool {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        if vcsKind?.isJujutsu == true { return true }
         if createNewBranch {
             return !branchName.trimmingCharacters(in: .whitespaces).isEmpty
         }
@@ -197,27 +204,30 @@ struct CreateWorktreeSheet: View {
         inProgress = true
         errorMessage = nil
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let isJJ = vcsKind?.isJujutsu == true
         let branch = createNewBranch
             ? branchName.trimmingCharacters(in: .whitespaces)
             : selectedExistingBranch
 
         let slug = Self.slug(from: trimmedName)
-        let worktreeDirectory = MuxyFileStorage
-            .worktreeDirectory(forProjectID: project.id, name: slug)
-            .path(percentEncoded: false)
+        let worktreeDirectory = await vcsProvider.worktreeDirectory(
+            forProjectID: project.id,
+            name: slug,
+            projectPath: project.path
+        )
 
-        if FileManager.default.fileExists(atPath: worktreeDirectory) {
+        if FileManager.default.fileExists(atPath: worktreeDirectory.path) {
             await MainActor.run {
                 inProgress = false
-                errorMessage = "A worktree with this name already exists on disk."
+                errorMessage = "A \(isJJ ? "workspace" : "worktree") with this name already exists on disk."
             }
             return
         }
 
         do {
-            try await gitWorktree.addWorktree(
+            try await vcsProvider.addWorktree(
                 repoPath: project.path,
-                path: worktreeDirectory,
+                path: worktreeDirectory.path,
                 branch: branch,
                 createBranch: createNewBranch
             )
@@ -231,8 +241,8 @@ struct CreateWorktreeSheet: View {
 
         let worktree = Worktree(
             name: trimmedName,
-            path: worktreeDirectory,
-            branch: branch,
+            path: worktreeDirectory.path,
+            branch: branch.isEmpty ? nil : branch,
             ownsBranch: createNewBranch,
             isPrimary: false
         )

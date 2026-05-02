@@ -1068,7 +1068,7 @@ final class VCSTabState {
 
     func deleteLocalBranch(_ name: String) async {
         do {
-            try await GitWorktreeService.shared.deleteBranch(repoPath: projectPath, branch: name)
+            try await VCSProvider.shared.deleteBranch(repoPath: projectPath, branch: name)
             loadBranches()
             showStatus("Deleted branch \(name)", isError: false)
         } catch {

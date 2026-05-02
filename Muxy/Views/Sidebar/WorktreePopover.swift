@@ -3,7 +3,7 @@ import SwiftUI
 
 struct WorktreePopover: View {
     let project: Project
-    let isGitRepo: Bool
+    let supportsWorktrees: Bool
     let onDismiss: () -> Void
     let onRequestCreate: () -> Void
     var fixedSize: Bool = true
@@ -62,7 +62,7 @@ struct WorktreePopover: View {
     }
 
     private var footerActions: [PopoverFooterAction] {
-        guard isGitRepo else { return [] }
+        guard supportsWorktrees else { return [] }
         return [
             PopoverFooterAction(
                 title: "Refresh Worktrees",
@@ -88,7 +88,7 @@ struct WorktreePopover: View {
     }
 
     private func requestRemove(worktree: Worktree) async {
-        let hasChanges = await GitWorktreeService.shared.hasUncommittedChanges(worktreePath: worktree.path)
+        let hasChanges = await VCSProvider.shared.hasUncommittedChanges(worktreePath: worktree.path)
         if !hasChanges {
             performRemove(worktree: worktree)
             return

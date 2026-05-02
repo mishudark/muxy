@@ -35,7 +35,15 @@ enum MuxyFileStorage {
         return dir
     }
 
-    static func worktreeDirectory(forProjectID projectID: UUID, name: String) -> URL {
+    static func gitWorktreeDirectory(forProjectID projectID: UUID, name: String) -> URL {
         worktreeRoot(forProjectID: projectID).appendingPathComponent(name, isDirectory: true)
+    }
+
+    static func worktreeDirectory(forProjectID projectID: UUID, name: String, projectPath: String, vcsKind: VCSKind?) -> URL {
+        if let vcsKind, vcsKind.isJujutsu {
+            let parent = URL(fileURLWithPath: projectPath).deletingLastPathComponent()
+            return parent.appendingPathComponent(name, isDirectory: true)
+        }
+        return gitWorktreeDirectory(forProjectID: projectID, name: name)
     }
 }
